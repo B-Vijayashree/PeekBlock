@@ -4,6 +4,7 @@ import android.Manifest;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.util.Log;
@@ -21,13 +22,16 @@ import androidx.camera.view.PreviewView;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
+import com.google.android.gms.tasks.OnSuccessListener;
 import com.google.android.material.switchmaterial.SwitchMaterial;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.mlkit.vision.common.InputImage;
+import com.google.mlkit.vision.face.Face;
 import com.google.mlkit.vision.face.FaceDetection;
 import com.google.mlkit.vision.face.FaceDetector;
 import com.google.mlkit.vision.face.FaceDetectorOptions;
 
+import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -56,7 +60,6 @@ public class MainActivity extends AppCompatActivity {
         warningText = findViewById(R.id.warningText);
         switchPrivacy = findViewById(R.id.switchPrivacy);
 
-        // Step 1: User Activates PeekBlock
         switchPrivacy.setOnCheckedChangeListener((buttonView, isChecked) -> {
             isPrivacyModeEnabled = isChecked;
             if (isChecked) {
@@ -66,9 +69,11 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        // Initialize ML Kit Detector (Step 3)
+        // Step 3: Face detection with Classification and Euler angles
         FaceDetectorOptions options = new FaceDetectorOptions.Builder()
                 .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+                .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_NONE)
+                .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_NONE)
                 .build();
         detector = FaceDetection.getClient(options);
 
@@ -86,10 +91,12 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void requestOverlayPermission() {
-        if (!Settings.canDrawOverlays(this)) {
-            Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    Uri.parse("package:" + getPackageName()));
-            startActivityForResult(intent, OVERLAY_PERMISSION_CODE);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            if (!Settings.canDrawOverlays(this)) {
+                Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:" + getPackageName()));
+                startActivityForResult(intent, OVERLAY_PERMISSION_CODE);
+            }
         }
     }
 
@@ -100,7 +107,6 @@ public class MainActivity extends AppCompatActivity {
             try {
                 ProcessCameraProvider cameraProvider = cameraProviderFuture.get();
 
-                // Step 2: Front Camera Monitoring
                 Preview preview = new Preview.Builder().build();
                 preview.setSurfaceProvider(previewView.getSurfaceProvider());
 
@@ -135,12 +141,28 @@ public class MainActivity extends AppCompatActivity {
         InputImage image = InputImage.fromMediaImage(imageProxy.getImage(), imageProxy.getImageInfo().getRotationDegrees());
 
         detector.process(image)
-                .addOnSuccessListener(faces -> {
-                    int faceCount = faces.size();
-                    if (faceCount > 1) {
-                        showSecurityActions();
-                    } else {
-                        hideSecurityActions();
+                .addOnSuccessListener(new OnSuccessListener<List<Face>>() {
+                    @Override
+                    public void onSuccess(List<Face> faces) {
+                        int lookingAtScreenCount = 0;
+
+                        for (Face face : faces) {
+                            float rotX = face.getHeadEulerAngleX(); // Up/Down
+                            float rotY = face.getHeadEulerAngleY(); // Left/Right
+
+                            // Improved Flow: Gaze detection check
+                            // If angles are near 0 (+/- 15), person is facing the phone
+                            if (rotX > -15 && rotX < 15 && rotY > -15 && rotY < 15) {
+                                lookingAtScreenCount++;
+                            }
+                        }
+
+                        // Security Action: Trigger if more than one person is looking
+                        if (lookingAtScreenCount > 1) {
+                            showSecurityActions();
+                        } else {
+                            hideSecurityActions();
+                        }
                     }
                 })
                 .addOnCompleteListener(task -> imageProxy.close());

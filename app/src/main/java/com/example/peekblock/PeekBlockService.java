@@ -4,7 +4,6 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
-import android.content.Context;
 import android.content.Intent;
 import android.graphics.PixelFormat;
 import android.os.Build;
@@ -28,6 +27,7 @@ import androidx.lifecycle.LifecycleRegistry;
 
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.mlkit.vision.common.InputImage;
+import com.google.mlkit.vision.face.Face;
 import com.google.mlkit.vision.face.FaceDetection;
 import com.google.mlkit.vision.face.FaceDetector;
 import com.google.mlkit.vision.face.FaceDetectorOptions;
@@ -56,6 +56,8 @@ public class PeekBlockService extends Service implements LifecycleOwner {
         lifecycleRegistry = new LifecycleRegistry(this);
         lifecycleRegistry.setCurrentState(Lifecycle.State.CREATED);
 
+        // Improved Flow: Added classification and landmark modes if needed, 
+        // but Euler angles are available by default.
         FaceDetectorOptions options = new FaceDetectorOptions.Builder()
                 .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
                 .build();
@@ -72,8 +74,9 @@ public class PeekBlockService extends Service implements LifecycleOwner {
             createNotificationChannel();
             Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
                     .setContentTitle("PeekBlock Active")
-                    .setContentText("Monitoring for peekers...")
+                    .setContentText("Protecting your screen...")
                     .setSmallIcon(R.mipmap.ic_launcher)
+                    .setPriority(NotificationCompat.PRIORITY_LOW)
                     .build();
 
             startForeground(NOTIFICATION_ID, notification);
@@ -115,7 +118,21 @@ public class PeekBlockService extends Service implements LifecycleOwner {
 
         detector.process(image)
                 .addOnSuccessListener(faces -> {
-                    if (faces.size() > 1) {
+                    int lookingAtScreenCount = 0;
+
+                    for (Face face : faces) {
+                        float rotX = face.getHeadEulerAngleX(); // Up/Down
+                        float rotY = face.getHeadEulerAngleY(); // Left/Right
+
+                        // Gaze Detection Logic:
+                        // If the head rotation is within +/- 15 degrees, 
+                        // they are likely looking directly at the screen.
+                        if (rotX > -15 && rotX < 15 && rotY > -15 && rotY < 15) {
+                            lookingAtScreenCount++;
+                        }
+                    }
+
+                    if (lookingAtScreenCount > 1) {
                         showOverlay();
                     } else {
                         hideOverlay();
@@ -160,7 +177,9 @@ public class PeekBlockService extends Service implements LifecycleOwner {
                     NotificationManager.IMPORTANCE_LOW
             );
             NotificationManager manager = getSystemService(NotificationManager.class);
-            manager.createNotificationChannel(serviceChannel);
+            if (manager != null) {
+                manager.createNotificationChannel(serviceChannel);
+            }
         }
     }
 
