@@ -40,22 +40,49 @@
             android:layout_gravity="center"
             android:text="Privacy Guard Mode " />
 
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Select Alert Type:"
+            android:layout_marginTop="16dp"
+            android:textStyle="bold"/>
+
+        <RadioGroup
+            android:id="@+id/radioGroupAlert"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp">
+
+            <RadioButton
+                android:id="@+id/radioBlur"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Whole Blur Overlay"
+                android:checked="true"/>
+
+            <RadioButton
+                android:id="@+id/radioToast"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Toast Message"/>
+
+            <RadioButton
+                android:id="@+id/radioVibrate"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Vibration"/>
+
+        </RadioGroup>
+
         <com.google.android.material.textfield.TextInputLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="20dp"
-            android:hint="Sensitive Data (Password)">
-
-            <com.google.android.material.textfield.TextInputEditText
-                android:id="@+id/etSensitive"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:inputType="textPassword" />
-        </com.google.android.material.textfield.TextInputLayout>
+            android:hint="Sensitive Data (Password)"/>
 
     </LinearLayout>
 
-    <!-- Blur Overlay (Step 5) -->
+    <!-- Blur Overlay -->
     <View
         android:id="@+id/blurOverlay"
         android:layout_width="match_parent"

@@ -1,14 +1,20 @@
 package com.example.peekblock;
 
 import android.Manifest;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+import android.os.VibratorManager;
 import android.provider.Settings;
 import android.util.Log;
 import android.view.View;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
@@ -46,9 +52,12 @@ public class MainActivity extends AppCompatActivity {
     private View blurOverlay;
     private View warningText;
     private SwitchMaterial switchPrivacy;
+    private RadioGroup radioGroupAlert;
     private ExecutorService cameraExecutor;
     private FaceDetector detector;
     private boolean isPrivacyModeEnabled = false;
+    private Toast currentToast;
+    private boolean isVibrating = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -59,6 +68,7 @@ public class MainActivity extends AppCompatActivity {
         blurOverlay = findViewById(R.id.blurOverlay);
         warningText = findViewById(R.id.warningText);
         switchPrivacy = findViewById(R.id.switchPrivacy);
+        radioGroupAlert = findViewById(R.id.radioGroupAlert);
 
         switchPrivacy.setOnCheckedChangeListener((buttonView, isChecked) -> {
             isPrivacyModeEnabled = isChecked;
@@ -170,8 +180,19 @@ public class MainActivity extends AppCompatActivity {
 
     private void showSecurityActions() {
         runOnUiThread(() -> {
-            blurOverlay.setVisibility(View.VISIBLE);
-            warningText.setVisibility(View.VISIBLE);
+            int checkedId = radioGroupAlert.getCheckedRadioButtonId();
+            
+            if (checkedId == R.id.radioBlur) {
+                blurOverlay.setVisibility(View.VISIBLE);
+                warningText.setVisibility(View.VISIBLE);
+            } else if (checkedId == R.id.radioToast) {
+                if (currentToast == null) {
+                    currentToast = Toast.makeText(MainActivity.this, "PRIVACY ALERT: PEERING DETECTED!", Toast.LENGTH_SHORT);
+                }
+                currentToast.show();
+            } else if (checkedId == R.id.radioVibrate) {
+                vibratePhone();
+            }
         });
     }
 
@@ -179,7 +200,46 @@ public class MainActivity extends AppCompatActivity {
         runOnUiThread(() -> {
             blurOverlay.setVisibility(View.GONE);
             warningText.setVisibility(View.GONE);
+            stopVibration();
         });
+    }
+
+    private void vibratePhone() {
+        if (isVibrating) return;
+        isVibrating = true;
+        
+        Vibrator vibrator;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            VibratorManager vibratorManager = (VibratorManager) getSystemService(Context.VIBRATOR_MANAGER_SERVICE);
+            vibrator = vibratorManager.getDefaultVibrator();
+        } else {
+            vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+        }
+
+        if (vibrator != null && vibrator.hasVibrator()) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator.vibrate(VibrationEffect.createWaveform(new long[]{0, 500, 200}, 0));
+            } else {
+                vibrator.vibrate(new long[]{0, 500, 200}, 0);
+            }
+        }
+    }
+
+    private void stopVibration() {
+        if (!isVibrating) return;
+        isVibrating = false;
+        
+        Vibrator vibrator;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            VibratorManager vibratorManager = (VibratorManager) getSystemService(Context.VIBRATOR_MANAGER_SERVICE);
+            vibrator = vibratorManager.getDefaultVibrator();
+        } else {
+            vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+        }
+        
+        if (vibrator != null) {
+            vibrator.cancel();
+        }
     }
 
     @Override
@@ -199,5 +259,6 @@ public class MainActivity extends AppCompatActivity {
     protected void onDestroy() {
         super.onDestroy();
         cameraExecutor.shutdown();
+        stopVibration();
     }
 }
