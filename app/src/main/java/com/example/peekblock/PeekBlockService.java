@@ -4,15 +4,20 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
+import android.content.Context;
 import android.content.Intent;
 import android.graphics.PixelFormat;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+import android.os.VibratorManager;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.WindowManager;
+import android.widget.Toast;
 
 import androidx.annotation.Nullable;
 import androidx.camera.core.CameraSelector;
@@ -40,6 +45,7 @@ import java.util.concurrent.Executors;
 public class PeekBlockService extends Service implements LifecycleOwner {
 
     public static final String ACTION_START_DETECTION = "ACTION_START_DETECTION";
+    public static final String ACTION_STOP_DETECTION = "ACTION_STOP_DETECTION";
     private static final String CHANNEL_ID = "PeekBlockChannel";
     private static final int NOTIFICATION_ID = 1;
 
@@ -47,8 +53,27 @@ public class PeekBlockService extends Service implements LifecycleOwner {
     private ExecutorService cameraExecutor;
     private FaceDetector detector;
     private WindowManager windowManager;
-    private View overlayView;
-    private boolean isOverlayVisible = false;
+    
+    private View fullOverlay;
+    private View sideBlurLeft;
+    private View sideBlurRight;
+    private View warningText;
+    
+    private boolean isFullOverlayVisible = false;
+    private boolean isSideLeftVisible = false;
+    private boolean isSideRightVisible = false;
+    private boolean isWarningVisible = false;
+    
+    private boolean isVibrating = false;
+    private Toast currentToast;
+    
+    // Static settings to be toggled from MainActivity
+    public static boolean useBlur = true;
+    public static boolean useSideBlur = false;
+    public static boolean useToast = false;
+    public static boolean useVibrate = false;
+    
+    public static boolean isServiceRunning = false;
 
     @Override
     public void onCreate() {
@@ -56,8 +81,6 @@ public class PeekBlockService extends Service implements LifecycleOwner {
         lifecycleRegistry = new LifecycleRegistry(this);
         lifecycleRegistry.setCurrentState(Lifecycle.State.CREATED);
 
-        // Improved Flow: Added classification and landmark modes if needed, 
-        // but Euler angles are available by default.
         FaceDetectorOptions options = new FaceDetectorOptions.Builder()
                 .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
                 .build();
@@ -65,23 +88,34 @@ public class PeekBlockService extends Service implements LifecycleOwner {
         cameraExecutor = Executors.newSingleThreadExecutor();
 
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
-        overlayView = LayoutInflater.from(this).inflate(R.layout.overlay_blur, null);
+        
+        LayoutInflater inflater = LayoutInflater.from(this);
+        fullOverlay = inflater.inflate(R.layout.overlay_blur, null);
+        sideBlurLeft = inflater.inflate(R.layout.overlay_side_left, null);
+        sideBlurRight = inflater.inflate(R.layout.overlay_side_right, null);
+        warningText = inflater.inflate(R.layout.overlay_warning, null);
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent != null && ACTION_START_DETECTION.equals(intent.getAction())) {
-            createNotificationChannel();
-            Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
-                    .setContentTitle("PeekBlock Active")
-                    .setContentText("Protecting your screen...")
-                    .setSmallIcon(R.mipmap.ic_launcher)
-                    .setPriority(NotificationCompat.PRIORITY_LOW)
-                    .build();
+        if (intent != null) {
+            if (ACTION_START_DETECTION.equals(intent.getAction())) {
+                isServiceRunning = true;
+                createNotificationChannel();
+                Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
+                        .setContentTitle("PeekBlock Shield Active")
+                        .setContentText("Privacy protection is running in background")
+                        .setSmallIcon(R.mipmap.ic_launcher)
+                        .setPriority(NotificationCompat.PRIORITY_LOW)
+                        .setOngoing(true)
+                        .build();
 
-            startForeground(NOTIFICATION_ID, notification);
-            lifecycleRegistry.setCurrentState(Lifecycle.State.STARTED);
-            startCamera();
+                startForeground(NOTIFICATION_ID, notification);
+                lifecycleRegistry.setCurrentState(Lifecycle.State.STARTED);
+                startCamera();
+            } else if (ACTION_STOP_DETECTION.equals(intent.getAction())) {
+                stopSelf();
+            }
         }
         return START_STICKY;
     }
@@ -118,90 +152,165 @@ public class PeekBlockService extends Service implements LifecycleOwner {
 
         detector.process(image)
                 .addOnSuccessListener(faces -> {
-                    int lookingAtScreenCount = 0;
+                    int lookingCount = 0;
+                    boolean intruderLeft = false;
+                    boolean intruderRight = false;
 
+                    Face mainUser = null;
+                    float maxArea = 0;
                     for (Face face : faces) {
-                        float rotX = face.getHeadEulerAngleX(); // Up/Down
-                        float rotY = face.getHeadEulerAngleY(); // Left/Right
-
-                        // Gaze Detection Logic:
-                        // If the head rotation is within +/- 15 degrees, 
-                        // they are likely looking directly at the screen.
-                        if (rotX > -15 && rotX < 15 && rotY > -15 && rotY < 15) {
-                            lookingAtScreenCount++;
+                        float area = face.getBoundingBox().width() * face.getBoundingBox().height();
+                        if (area > maxArea) {
+                            maxArea = area;
+                            mainUser = face;
                         }
                     }
 
-                    if (lookingAtScreenCount > 1) {
-                        showOverlay();
+                    for (Face face : faces) {
+                        float rotX = face.getHeadEulerAngleX();
+                        float rotY = face.getHeadEulerAngleY();
+
+                        if (rotX > -20 && rotX < 20 && rotY > -20 && rotY < 20) {
+                            lookingCount++;
+                            if (face != mainUser && mainUser != null) {
+                                if (face.getBoundingBox().centerX() < mainUser.getBoundingBox().centerX()) {
+                                    intruderRight = true;
+                                } else {
+                                    intruderLeft = true;
+                                }
+                            }
+                        }
+                    }
+
+                    if (lookingCount > 1) {
+                        showSecurityActions(intruderLeft, intruderRight);
                     } else {
-                        hideOverlay();
+                        hideSecurityActions();
                     }
                 })
                 .addOnCompleteListener(task -> imageProxy.close());
     }
 
-    private void showOverlay() {
-        if (isOverlayVisible) return;
-
+    private void showSecurityActions(boolean left, boolean right) {
         ContextCompat.getMainExecutor(this).execute(() -> {
-            WindowManager.LayoutParams params = new WindowManager.LayoutParams(
-                    WindowManager.LayoutParams.MATCH_PARENT,
-                    WindowManager.LayoutParams.MATCH_PARENT,
-                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ?
-                            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY :
-                            WindowManager.LayoutParams.TYPE_PHONE,
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-                    PixelFormat.TRANSLUCENT);
+            boolean anyOverlayShown = false;
 
-            params.gravity = Gravity.TOP;
-            windowManager.addView(overlayView, params);
-            isOverlayVisible = true;
+            if (useBlur) {
+                addOverlay(fullOverlay, WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT, Gravity.CENTER);
+                isFullOverlayVisible = true;
+                anyOverlayShown = true;
+            }
+            if (useSideBlur) {
+                if (left) {
+                    addOverlay(sideBlurLeft, 350, WindowManager.LayoutParams.MATCH_PARENT, Gravity.START);
+                    isSideLeftVisible = true;
+                    anyOverlayShown = true;
+                }
+                if (right) {
+                    addOverlay(sideBlurRight, 350, WindowManager.LayoutParams.MATCH_PARENT, Gravity.END);
+                    isSideRightVisible = true;
+                    anyOverlayShown = true;
+                }
+            }
+            
+            if (anyOverlayShown) {
+                addWarning();
+            }
+
+            if (useToast) {
+                if (currentToast != null) currentToast.cancel();
+                currentToast = Toast.makeText(this, "PRIVACY BREACH DETECTED!", Toast.LENGTH_SHORT);
+                currentToast.show();
+            }
+            
+            if (useVibrate) {
+                vibratePhone();
+            }
         });
     }
 
-    private void hideOverlay() {
-        if (!isOverlayVisible) return;
+    private void addOverlay(View view, int width, int height, int gravity) {
+        if (view.getParent() != null) return;
+        WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+                width, height,
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ?
+                        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY :
+                        WindowManager.LayoutParams.TYPE_PHONE,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSLUCENT);
+        params.gravity = gravity;
+        windowManager.addView(view, params);
+    }
 
+    private void addWarning() {
+        if (warningText.getParent() != null) return;
+        WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ?
+                        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY :
+                        WindowManager.LayoutParams.TYPE_PHONE,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSLUCENT);
+        params.gravity = Gravity.CENTER;
+        windowManager.addView(warningText, params);
+        isWarningVisible = true;
+    }
+
+    private void hideSecurityActions() {
         ContextCompat.getMainExecutor(this).execute(() -> {
-            windowManager.removeView(overlayView);
-            isOverlayVisible = false;
+            if (isFullOverlayVisible) { windowManager.removeView(fullOverlay); isFullOverlayVisible = false; }
+            if (isSideLeftVisible) { windowManager.removeView(sideBlurLeft); isSideLeftVisible = false; }
+            if (isSideRightVisible) { windowManager.removeView(sideBlurRight); isSideRightVisible = false; }
+            if (isWarningVisible) { windowManager.removeView(warningText); isWarningVisible = false; }
+            stopVibration();
         });
+    }
+
+    private void vibratePhone() {
+        if (isVibrating) return;
+        isVibrating = true;
+        Vibrator v = getVibrator();
+        if (v != null && v.hasVibrator()) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                v.vibrate(VibrationEffect.createWaveform(new long[]{0, 500, 200}, 0));
+            } else {
+                v.vibrate(new long[]{0, 500, 200}, 0);
+            }
+        }
+    }
+
+    private void stopVibration() {
+        if (!isVibrating) return;
+        isVibrating = false;
+        Vibrator v = getVibrator();
+        if (v != null) v.cancel();
+    }
+
+    private Vibrator getVibrator() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            VibratorManager vm = (VibratorManager) getSystemService(Context.VIBRATOR_MANAGER_SERVICE);
+            return vm.getDefaultVibrator();
+        }
+        return (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
     }
 
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel serviceChannel = new NotificationChannel(
-                    CHANNEL_ID,
-                    "PeekBlock Service Channel",
-                    NotificationManager.IMPORTANCE_LOW
-            );
+            NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "PeekBlock Service", NotificationManager.IMPORTANCE_LOW);
             NotificationManager manager = getSystemService(NotificationManager.class);
-            if (manager != null) {
-                manager.createNotificationChannel(serviceChannel);
-            }
+            if (manager != null) manager.createNotificationChannel(channel);
         }
     }
 
     @Override
     public void onDestroy() {
         super.onDestroy();
+        isServiceRunning = false;
         lifecycleRegistry.setCurrentState(Lifecycle.State.DESTROYED);
         cameraExecutor.shutdown();
-        if (isOverlayVisible) {
-            windowManager.removeView(overlayView);
-        }
+        hideSecurityActions();
     }
 
-    @Nullable
-    @Override
-    public IBinder onBind(Intent intent) {
-        return null;
-    }
-
-    @androidx.annotation.NonNull
-    @Override
-    public Lifecycle getLifecycle() {
-        return lifecycleRegistry;
-    }
+    @Nullable @Override public IBinder onBind(Intent intent) { return null; }
+    @androidx.annotation.NonNull @Override public Lifecycle getLifecycle() { return lifecycleRegistry; }
 }
